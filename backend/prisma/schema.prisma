@@ -1,0 +1,491 @@
+// Fish Port & Seafood Trading — Enterprise Data Management System
+// Weights are in kilograms (Float), temperatures in °C (Float), money in pesos (Decimal).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ───────────────────────────── Enums ─────────────────────────────
+
+enum Department {
+  ADMIN // Data steward: master data, DQ rules, users
+  OPERATIONS // Landing, grading, cold storage
+  SALES // Sales orders, trucks, delivery (sales & logistics)
+  FINANCE // Fisher settlements, invoices, payments
+}
+
+enum RecordStatus {
+  ACTIVE
+  MERGED
+  INACTIVE
+}
+
+enum PayoutMethod {
+  GCASH
+  BANK
+  CASH
+}
+
+enum StorageType {
+  BLAST_FREEZER
+  CHILLER
+}
+
+enum LandingStatus {
+  RECEIVED // waiting for QC
+  GRADED // all items graded
+}
+
+enum Grade {
+  A
+  B
+  C
+}
+
+enum LotStatus {
+  GRADED // waiting for cold storage
+  IN_STORAGE // available for sale
+  RESERVED // fully reserved by sales orders
+  DELIVERED // fully sold and delivered
+  QUARANTINED // blocked by DQM (e.g. expired)
+  SPOILED
+}
+
+enum OrderStatus {
+  DRAFT
+  CONFIRMED
+  DISPATCHED
+  DELIVERED
+  CANCELLED
+}
+
+enum DispatchStatus {
+  PENDING
+  IN_TRANSIT
+  DELIVERED
+}
+
+enum InvoiceStatus {
+  UNPAID
+  PARTIAL
+  PAID
+}
+
+enum SettlementStatus {
+  DRAFT
+  APPROVED
+  PAID
+}
+
+enum DqDimension {
+  COMPLETENESS
+  VALIDITY
+  ACCURACY
+  UNIQUENESS
+  CONSISTENCY
+  TIMELINESS
+}
+
+enum DqSeverity {
+  BLOCK // stops the transaction in real time
+  WARN // allows the transaction but opens an issue
+}
+
+enum DqIssueStatus {
+  OPEN
+  RESOLVED
+  IGNORED
+}
+
+// ───────────────────────────── Users ─────────────────────────────
+
+model User {
+  id           Int        @id @default(autoincrement())
+  name         String
+  email        String     @unique
+  passwordHash String
+  department   Department
+  active       Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  landingsReceived Landing[]
+  lotsGraded       Lot[]
+  temperatureLogs  TemperatureLog[]
+  salesOrders      SalesOrder[]
+  payments         Payment[]
+  auditLogs        AuditLog[]
+  issuesResolved   DqIssue[]
+}
+
+// ───────────────────────────── Master data ─────────────────────────────
+
+model Species {
+  id                    Int      @id @default(autoincrement())
+  name                  String   @unique
+  localName             String?
+  buyingPricePerKg      Decimal  @db.Decimal(12, 2) // paid to fishers (Grade A)
+  minSellPricePerKg     Decimal  @db.Decimal(12, 2)
+  maxSellPricePerKg     Decimal  @db.Decimal(12, 2)
+  maxShelfHours         Int // freshness limit from landing time
+  shrinkageTolerancePct Float    @default(3)
+  minTempC              Float
+  maxTempC              Float
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  landingItems LandingItem[]
+  lots         Lot[]
+}
+
+model Fisher {
+  id            Int           @id @default(autoincrement())
+  name          String
+  phone         String?
+  tin           String?
+  address       String?
+  payoutMethod  PayoutMethod?
+  payoutAccount String?
+  status        RecordStatus  @default(ACTIVE)
+  mergedIntoId  Int?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  vessels     Vessel[]
+  settlements FisherSettlement[]
+}
+
+model Vessel {
+  id             Int      @id @default(autoincrement())
+  registrationNo String   @unique
+  name           String
+  ownerId        Int
+  owner          Fisher   @relation(fields: [ownerId], references: [id])
+  capacityKg     Float
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  landings Landing[]
+}
+
+model Buyer {
+  id            Int          @id @default(autoincrement())
+  businessName  String
+  contactPerson String?
+  phone         String?
+  email         String?
+  tin           String?
+  address       String?
+  creditLimit   Decimal      @default(0) @db.Decimal(12, 2)
+  status        RecordStatus @default(ACTIVE)
+  mergedIntoId  Int?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  salesOrders SalesOrder[]
+  invoices    Invoice[]
+}
+
+model StorageUnit {
+  id         Int         @id @default(autoincrement())
+  code       String      @unique
+  type       StorageType
+  capacityKg Float
+  minTempC   Float
+  maxTempC   Float
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  lots            Lot[]
+  temperatureLogs TemperatureLog[]
+}
+
+model Truck {
+  id         Int      @id @default(autoincrement())
+  plateNo    String   @unique
+  capacityKg Float
+  isReefer   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  dispatches Dispatch[]
+}
+
+// ───────────────────────────── Port operations & QC ─────────────────────────────
+
+model Landing {
+  id           Int           @id @default(autoincrement())
+  landingNo    String        @unique
+  vesselId     Int
+  vessel       Vessel        @relation(fields: [vesselId], references: [id])
+  arrivedAt    DateTime
+  receivedById Int?
+  receivedBy   User?         @relation(fields: [receivedById], references: [id])
+  status       LandingStatus @default(RECEIVED)
+  notes        String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  items      LandingItem[]
+  settlement FisherSettlement?
+}
+
+model LandingItem {
+  id            Int       @id @default(autoincrement())
+  landingId     Int
+  landing       Landing   @relation(fields: [landingId], references: [id], onDelete: Cascade)
+  speciesId     Int
+  species       Species   @relation(fields: [speciesId], references: [id])
+  grossWeightKg Float
+  gradedAt      DateTime?
+
+  lots Lot[]
+}
+
+model Lot {
+  id            Int          @id @default(autoincrement())
+  lotNo         String       @unique
+  landingItemId Int
+  landingItem   LandingItem  @relation(fields: [landingItemId], references: [id])
+  speciesId     Int
+  species       Species      @relation(fields: [speciesId], references: [id])
+  grade         Grade
+  netWeightKg   Float
+  reservedKg    Float        @default(0)
+  dispatchedKg  Float        @default(0)
+  status        LotStatus    @default(GRADED)
+  landedAt      DateTime
+  expiresAt     DateTime
+  storageUnitId Int?
+  storageUnit   StorageUnit? @relation(fields: [storageUnitId], references: [id])
+  storedAt      DateTime?
+  gradedById    Int?
+  gradedBy      User?        @relation(fields: [gradedById], references: [id])
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  orderItems    SalesOrderItem[]
+  dispatchItems DispatchItem[]
+}
+
+// ───────────────────────────── Cold storage ─────────────────────────────
+
+model TemperatureLog {
+  id            Int         @id @default(autoincrement())
+  storageUnitId Int
+  storageUnit   StorageUnit @relation(fields: [storageUnitId], references: [id])
+  readingC      Float
+  recordedAt    DateTime    @default(now())
+  recordedById  Int?
+  recordedBy    User?       @relation(fields: [recordedById], references: [id])
+}
+
+// ───────────────────────────── Sales & logistics ─────────────────────────────
+
+model SalesOrder {
+  id          Int         @id @default(autoincrement())
+  orderNo     String      @unique
+  buyerId     Int
+  buyer       Buyer       @relation(fields: [buyerId], references: [id])
+  status      OrderStatus @default(DRAFT)
+  createdById Int?
+  createdBy   User?       @relation(fields: [createdById], references: [id])
+  confirmedAt DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  items    SalesOrderItem[]
+  dispatch Dispatch?
+  invoice  Invoice?
+}
+
+model SalesOrderItem {
+  id           Int        @id @default(autoincrement())
+  salesOrderId Int
+  salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  lotId        Int
+  lot          Lot        @relation(fields: [lotId], references: [id])
+  weightKg     Float
+  pricePerKg   Decimal    @db.Decimal(12, 2)
+
+  dispatchItem DispatchItem?
+}
+
+model Dispatch {
+  id           Int            @id @default(autoincrement())
+  dispatchNo   String         @unique
+  salesOrderId Int            @unique
+  salesOrder   SalesOrder     @relation(fields: [salesOrderId], references: [id])
+  truckId      Int?
+  truck        Truck?         @relation(fields: [truckId], references: [id])
+  status       DispatchStatus @default(PENDING)
+  departedAt   DateTime?
+  deliveredAt  DateTime?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  items DispatchItem[]
+}
+
+model DispatchItem {
+  id               Int            @id @default(autoincrement())
+  dispatchId       Int
+  dispatch         Dispatch       @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  salesOrderItemId Int            @unique
+  salesOrderItem   SalesOrderItem @relation(fields: [salesOrderItemId], references: [id])
+  lotId            Int
+  lot              Lot            @relation(fields: [lotId], references: [id])
+  orderedKg        Float
+  weightOutKg      Float? // actual weight at delivery
+}
+
+// ───────────────────────────── Finance ─────────────────────────────
+
+model Invoice {
+  id           Int           @id @default(autoincrement())
+  invoiceNo    String        @unique
+  buyerId      Int
+  buyer        Buyer         @relation(fields: [buyerId], references: [id])
+  salesOrderId Int           @unique
+  salesOrder   SalesOrder    @relation(fields: [salesOrderId], references: [id])
+  total        Decimal       @db.Decimal(12, 2)
+  amountPaid   Decimal       @default(0) @db.Decimal(12, 2)
+  status       InvoiceStatus @default(UNPAID)
+  issuedAt     DateTime      @default(now())
+  dueAt        DateTime
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  items    InvoiceItem[]
+  payments Payment[]
+}
+
+model InvoiceItem {
+  id          Int     @id @default(autoincrement())
+  invoiceId   Int
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  description String
+  weightKg    Float
+  pricePerKg  Decimal @db.Decimal(12, 2)
+  amount      Decimal @db.Decimal(12, 2)
+}
+
+model Payment {
+  id           Int      @id @default(autoincrement())
+  invoiceId    Int
+  invoice      Invoice  @relation(fields: [invoiceId], references: [id])
+  amount       Decimal  @db.Decimal(12, 2)
+  method       String
+  reference    String?
+  paidAt       DateTime @default(now())
+  receivedById Int?
+  receivedBy   User?    @relation(fields: [receivedById], references: [id])
+}
+
+model FisherSettlement {
+  id           Int              @id @default(autoincrement())
+  settlementNo String           @unique
+  landingId    Int              @unique
+  landing      Landing          @relation(fields: [landingId], references: [id])
+  fisherId     Int
+  fisher       Fisher           @relation(fields: [fisherId], references: [id])
+  totalNetKg   Float
+  grossAmount  Decimal          @db.Decimal(12, 2)
+  portFee      Decimal          @db.Decimal(12, 2)
+  iceFee       Decimal          @db.Decimal(12, 2)
+  netAmount    Decimal          @db.Decimal(12, 2)
+  status       SettlementStatus @default(DRAFT)
+  approvedAt   DateTime?
+  paidAt       DateTime?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+}
+
+// ───────────────────────────── Integration & Data Quality ─────────────────────────────
+
+// Every cross-department hand-off is recorded here (the "integration log").
+model IntegrationEvent {
+  id         Int         @id @default(autoincrement())
+  type       String
+  sourceDept Department
+  targetDept Department?
+  entityType String
+  entityId   Int
+  message    String
+  payload    Json?
+  createdAt  DateTime    @default(now())
+
+  @@index([createdAt])
+}
+
+model DqRule {
+  id              Int         @id @default(autoincrement())
+  code            String      @unique
+  name            String
+  description     String
+  dimension       DqDimension
+  entityType      String
+  severity        DqSeverity
+  ownerDepartment Department
+  params          Json        @default("{}")
+  isActive        Boolean     @default(true)
+  checkMode       String // REALTIME, EVENT, BATCH (informational)
+  updatedAt       DateTime    @updatedAt
+
+  issues DqIssue[]
+}
+
+model DqIssue {
+  id           Int           @id @default(autoincrement())
+  ruleId       Int
+  rule         DqRule        @relation(fields: [ruleId], references: [id])
+  entityType   String
+  entityId     Int
+  entityLabel  String
+  message      String
+  severity     DqSeverity
+  department   Department
+  status       DqIssueStatus @default(OPEN)
+  detectedAt   DateTime      @default(now())
+  lastSeenAt   DateTime      @default(now())
+  resolvedAt   DateTime?
+  resolvedById Int?
+  resolvedBy   User?         @relation(fields: [resolvedById], references: [id])
+  note         String?
+
+  @@index([status, department])
+  @@index([ruleId, entityType, entityId])
+}
+
+// Daily snapshot of data quality scores (for the trend chart).
+model DqScore {
+  id             Int        @id @default(autoincrement())
+  date           DateTime   @db.Date
+  scope          String // "OVERALL", a Department, or a DqDimension
+  score          Float
+  totalRecords   Int
+  failingRecords Int
+  createdAt      DateTime   @default(now())
+
+  @@unique([date, scope])
+}
+
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  userId     Int?
+  user       User?    @relation(fields: [userId], references: [id])
+  action     String // CREATE, UPDATE, DELETE, MERGE
+  entityType String
+  entityId   Int?
+  before     Json?
+  after      Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+}

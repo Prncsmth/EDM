@@ -1,0 +1,27 @@
+# Render Blueprint — deploys the LAOT backend (Express API) as a web service.
+# Render → New → Blueprint → pick this repository. Fill in DATABASE_URL and DIRECT_URL
+# (the Neon connection strings) when Render asks; everything else is set here.
+services:
+  - type: web
+    name: laot-api
+    runtime: node
+    plan: free
+    region: singapore
+    rootDir: backend
+    buildCommand: npm ci && npm run build
+    # apply any new database migrations, then start the API
+    startCommand: npx prisma migrate deploy && npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL # Neon pooled connection string (host contains -pooler)
+        sync: false
+      - key: DIRECT_URL # Neon direct connection string (same, without -pooler)
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CORS_ORIGIN
+        value: https://laot.vercel.app,http://localhost:3000
+      - key: DQ_SCHEDULER
+        value: "true"
