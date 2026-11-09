@@ -1,5 +1,5 @@
 # Render Blueprint — deploys the LAOT backend (Express API) as a web service.
-# Render → New → Blueprint → pick this repository. Fill in DATABASE_URL and DIRECT_URL
+# Render → New → Blueprint → pick the LaotBackend repository. Fill in DATABASE_URL and DIRECT_URL
 # (the Neon connection strings) when Render asks; everything else is set here.
 services:
   - type: web
@@ -7,7 +7,6 @@ services:
     runtime: node
     plan: free
     region: singapore
-    rootDir: backend
     buildCommand: npm ci && npm run build
     # apply any new database migrations, then start the API
     startCommand: npx prisma migrate deploy && npm start
