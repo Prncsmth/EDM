@@ -8,7 +8,6 @@
 // encoded before the DQM rules existed — the DQM module should find all of them.
 
 import bcrypt from 'bcryptjs';
-import process from 'node:process';
 import { prisma, rawPrisma } from '../src/db';
 import { requestContext } from '../src/context';
 import { RULE_CATALOG } from '../src/dq/catalog';
@@ -187,6 +186,6 @@ async function main() {
 main()
   .catch((e) => {
     console.error(e);
-    process.exit(1);
+    throw e;
   })
   .finally(() => rawPrisma.$disconnect());
